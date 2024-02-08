@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,6 +42,8 @@
 /* Private variables ---------------------------------------------------------*/
 SPI_HandleTypeDef hspi1;
 
+UART_HandleTypeDef huart2;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -50,12 +52,66 @@ SPI_HandleTypeDef hspi1;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// global variables for SPI communication
+
+// Please do NOT touch this function, it is working as intended
+// Set CS to 0
+// Transmit desired address from IC Chip (16-bits)
+// Receive data from IC Chip (16-bits)
+// Takes 16 bit address (LSByte first)
+// Returns 16 bit data
+uint16_t TransmitReceiveRead (uint16_t addr){
+	uint16_t data;
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+	HAL_SPI_Transmit(&hspi1, (uint8_t *)&addr, 2, 100);
+	HAL_SPI_Receive(&hspi1, (uint8_t *)&data, 2, 100);
+	// Reformat data since bytes are read backwards
+//	uint8_t tempData1 = data >> 8 & 0xFF;
+//	uint8_t tempData2 = data & 0xFF;
+//	data = tempData2 << 8 | tempData1;
+//	data = tempData1;
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	return data;
+}
+
+// Please do NOT touch this function, it is working as intended
+// Set CS to 0
+// Transmit desired address to IC Chip (16-bits)
+// Transmit desired data to the IC Chip (16-bits)
+// Takes 16 bit address (LSByte first)
+// Takes 16 bit data (LSByte first)
+void TransmitReceiveWrite (uint16_t addr, uint8_t data){
+	// Reformat data since bytes are read backwards
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+
+	HAL_SPI_Transmit(&hspi1, (uint8_t *)&addr, 2, 100);
+	HAL_SPI_Transmit(&hspi1, (uint8_t *)&data, 2, 100);
+	uint8_t tempData1 = data >> 8 & 0xFF;
+	uint8_t tempData2 = data & 0xFF;
+	data = tempData2 << 8 | tempData1;
+
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+}
+
+// Calibration process listed in the M90E36A Datasheet
+// WARNING: This is a WIP function, requirements of project
+// specify no need to calibrate system
+//void CalibrateIC (void){
+//	uint16_t configStart = 0x5678;
+//	uint16_t configStartAddr = 0x3080;
+//	TransmitReceiveWrite(configStartAddr, configStart);
+//
+//	configStart = 0x8765;
+//	configStartAddr = 0x3080;
+//	TransmitReceiveWrite(configStartAddr, configStart);
+//}
 
 /* USER CODE END 0 */
 
@@ -66,7 +122,10 @@ static void MX_SPI1_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+//	VIRUTAL COM PORT TEST
+//	uint8_t Test[] = "Hello World !!!\r\n"; //Data to send
+//	HAL_UART_Transmit(&huart2,Test,sizeof(Test),10);// Sending in normal mode
+//	HAL_Delay(1000);
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -88,23 +147,61 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  uint16_t addr = 0x0EF0;
-  uint16_t data;
+  uint16_t addr = 0x7E44; //Test address is 0x0E, data should return 0x7E44
+  uint16_t test;
+  int16_t temp;
+  uint16_t freq;
+  uint16_t THD3rd;
+  uint16_t sysStatus;
+  uint16_t currentA;
+  uint16_t voltageA;
+
+
+  /* USER CODE END 2 */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /* USER CODE END WHILE */
-	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-	  HAL_SPI_Transmit(&hspi1, (uint8_t *)&addr, 2, 100);
-	  HAL_SPI_Receive(&hspi1, (uint8_t *)&data, 2, 100);
-	  uint8_t tempData1 = data >> 8 & 0xFF;
-	  uint8_t tempData2 = data & 0xFF;
-	  data = tempData2 << 8 | tempData1;
+    /* USER CODE END WHILE */
+	  // Start the DFT computation
+	  addr = 0xD101;
+	  uint16_t dftCtrl = 0x0001;
+	  TransmitReceiveWrite(addr,dftCtrl);
+	  HAL_Delay(500);
 
-	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	  // Test accuracy of transmissions
+	  addr = 0x0E80;
+	  test = TransmitReceiveRead(addr);
+
+	  // Frequency of voltage on pin A
+	  addr = 0xF880;
+	  freq = TransmitReceiveRead(addr);
+
+	  // Temp junction temperature of IC +- 1 degree C accuracy
+	  addr = 0xFC80;
+	  temp = TransmitReceiveRead(addr);
+
+	  // 3rd order harmonic on phase A
+	  addr = 0xF580;
+	  THD3rd = TransmitReceiveRead(addr);
+
+	  // Check system status of IC Chip
+	  addr = 0x0280;
+	  sysStatus = TransmitReceiveRead(addr);
+
+
+	  // voltage measurement on phase A
+	  addr = 0xD980;
+	  voltageA = TransmitReceiveRead(addr);
+	  // current measurement on phase A
+	  addr = 0xDD80;
+	  currentA = TransmitReceiveRead(addr);
+
     /* USER CODE BEGIN 3 */
+
   }
   /* USER CODE END 3 */
 }
@@ -117,6 +214,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -140,6 +238,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2;
+  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
@@ -182,6 +286,41 @@ static void MX_SPI1_Init(void)
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
 
 }
 
