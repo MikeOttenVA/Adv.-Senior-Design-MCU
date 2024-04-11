@@ -1,4 +1,14 @@
 /* USER CODE BEGIN Header */
+/*
+	Author: Michael Ottenberg
+	Date: 04.11.2024
+
+	Created using the ADC1256, NUCLEO F439ZI, and a Current Transformer to:
+	read current waveform from ADC, calculate THD data, and send to a virtual serial port
+
+	With Reference From: Jure Bartol
+	Date: 07.05.2016
+
 /**
   ******************************************************************************
   * @file           : main.c
@@ -18,10 +28,19 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "spi.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include "ads1256.h"
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+//#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,9 +59,6 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-SPI_HandleTypeDef hspi1;
-
-UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
@@ -50,9 +66,6 @@ UART_HandleTypeDef huart2;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -61,555 +74,212 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN 0 */
 // global variables for SPI communication
 
-// Please do NOT touch this function, it is working as intended
-// Set CS to 0
-// Transmit desired address from IC Chip (16-bits)
-// Receive data from IC Chip (16-bits)
-// Takes 16 bit address (LSByte first)
-// Returns 16 bit data
-uint16_t TransmitReceiveRead (uint16_t addr){
-	uint16_t data;
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-	HAL_SPI_Transmit(&hspi1, (uint8_t *)&addr, 2, 100);
-	HAL_SPI_Receive(&hspi1, (uint8_t *)&data, 2, 100);
-	// Reformat data since bytes are read backwards
-	uint8_t tempData1 = data >> 8 & 0xFF;
-	uint8_t tempData2 = data & 0xFF;
-	data = tempData2 << 8 | tempData1;
-//	data = tempData1;
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+// Send 8 bit value over serial interface (SPI).
+// Changed to use HAL, CS pin on B6
+void send8bit(uint8_t data)
+{
+	HAL_SPI_Transmit(&hspi3, (uint8_t *)&(data), 1, 1);
+}
+
+// Recieve 8 bit value over serial interface (SPI).
+uint8_t recieve8bit(void)
+{
+	uint8_t data = 0;
+	HAL_SPI_Receive(&hspi3, (uint8_t *)&data, 1, 1);
 	return data;
 }
 
-// Please do NOT touch this function, it is working as intended
-// Set CS to 0
-// Transmit desired address to IC Chip (16-bits)
-// Transmit desired data to the IC Chip (16-bits)
-// Takes 16 bit address (LSByte first)
-// Takes 16 bit data (LSByte first)
-void TransmitReceiveWrite (uint16_t addr, uint16_t data){
-	// Reformat data since bytes are read backwards
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+// Read 1 byte from register address registerID.
+// This could be modified to read any number of bytes from register!
+uint8_t readByteFromReg(uint8_t registerID)
+{
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+//	waitDRDY();
+	send8bit(CMD_RREG | registerID); // 1st byte: address of the first register to read
+	send8bit(0x00); 				 // 2nd byte: number of bytes to read = 1.
 
-	uint8_t tempData1 = data >> 8 & 0xFF;
-	uint8_t tempData2 = data & 0xFF;
-	data = tempData2 << 8 | tempData1;
+//	delayus(10); 	// min delay: t6 = 50 * 1/freq.clkin = 50 * 1 / 7,68 Mhz = 6.5 micro sec
+	uint8_t read = recieve8bit();
+//	HAL_SPI_Receive(&hspi1, (uint8_t *)&data, 1, 100);
 
-	HAL_SPI_Transmit(&hspi1, (uint8_t *)&addr, 2, 100);
-	HAL_SPI_Transmit(&hspi1, (uint8_t *)&data, 2, 100);
-
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+	return read;
 }
 
-// Calibration process listed in the M90E36A Datasheet
-// WARNING: This is a WIP function, requirements of project
-// specify no need to calibrate system
-// Should return 6886H
-uint16_t CalibrateICStartConfig (void){
-	HAL_Delay(500);
-
-	// See what's on checksum CS0 register
-	uint16_t CS0_1;
-	uint16_t CS0Addr = 0x3B80;
-	CS0_1 = TransmitReceiveRead(CS0Addr);
-	// Start configuring system config registers
-	uint16_t configStart = 0x5678;
-	uint16_t configStartAddr = 0x3000;
-	TransmitReceiveWrite(configStartAddr, configStart);
-	// Metering Method Config 1504, 1484
-	uint16_t MMode0Addr = 0x3300;
-	uint16_t MMode0 = 0x1504;
-	TransmitReceiveWrite(MMode0Addr,MMode0);
-
-	// PGA Gain Configuration, set all to 4 = AAAA, 2 = 5555, 1 = 0000
-	uint16_t MMode1Addr = 0x3400;
-	uint16_t MMode1 = 0xDAAA;
-	TransmitReceiveWrite(MMode1Addr,MMode1);
-
-	// Set DFT Configuration
-	uint16_t DFT_Addr = 0xD001;
-	//0x0049 is gain 2
-	//0x0092 is gain 4
-	//0x00DB is gain 8
-	//0x0124 is gain 16
-	//0x016D is gain 32
-	//0x01B6 is gain 64
-	//0x01FF is gain 128
-	uint16_t DFT = 0x01FF;
-	TransmitReceiveWrite(DFT_Addr,DFT);
-
-	// Turn on checksum checking
-	uint16_t startValue = 0x8765;
-	uint16_t configStartRegAddr = 0x3000;
-	TransmitReceiveWrite(configStartRegAddr, startValue);
-	uint16_t calStartRegAddr = 0x4000;
-	TransmitReceiveWrite(calStartRegAddr, startValue);
-	uint16_t harmStartRegAddr = 0x5000;
-	TransmitReceiveWrite(harmStartRegAddr, startValue);
-	uint16_t adjStartRegAddr = 0x6000;
-	TransmitReceiveWrite(adjStartRegAddr, startValue);
-
-
-	HAL_Delay(500);
-	// return checksum at start of power up state
-	return CS0_1;
+// Write value (1 byte) to register address registerID.
+// This could be modified to write any number of bytes to register!
+void writeByteToReg(uint8_t registerID, uint8_t value)
+{
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	send8bit(CMD_WREG | registerID); // 1st byte: address of the first register to write
+	send8bit(0x00); 				 // 2nd byte: number of bytes to write = 1.
+	send8bit(value);				 // 3rd byte: value to write to register
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 }
 
-// Should return 8765H meaning operating properly
-uint16_t CalibrateICIarms0mV (void){
-	// Measurement calibration
-	// *********************************
-	// Calibrate Irms phase A
-	unsigned int currentAMSB = 0;
-	for (int i = 0; i < 10; i++){
-		currentAMSB += TransmitReceiveRead(0xDD80);
-		HAL_Delay(50);
+// Send standalone commands to register.
+void writeCMD(uint8_t command)
+{
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	send8bit(command);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+}
+
+// Wait until DRDY is low.
+void waitDRDY(void)
+{
+	GPIO_PinState dRdyPinState = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_7);
+	while(dRdyPinState == GPIO_PIN_RESET){
+		dRdyPinState = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_7);
+		continue;
 	}
-	unsigned int currentALSB = 0;
-	for (int i = 0; i < 10; i++){
-		currentALSB += TransmitReceiveRead(0xED80);
-		HAL_Delay(50);
-	}
-	currentAMSB /= 10;
-	currentALSB /= 10;
-	uint32_t currentA = (currentAMSB << 16) | currentALSB;
-	uint16_t currentAOffset = ((~(currentA >> 7))+0b1);
-//	uint16_t currentAOffset = currentA | 0x8000;
-
-	// Start configuring system measurement registers
-	uint16_t configStart = 0x5678;
-	uint16_t configStartAddr = 0x6000;
-	TransmitReceiveWrite(configStartAddr, configStart);
-	TransmitReceiveWrite(0x6400, currentAOffset);
-
-	// Set gain calibration
-	// Value based on 0.65A test
-	// Then calculated as reference i/current measurement *30000
-	TransmitReceiveWrite(0x6200, 0x0E91);
-
-	uint8_t txbuf[64];
-	sprintf((char*)txbuf, "iA offset: %d\r\n", currentAOffset);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	// *********************************
-
-	// Turn on all processing
-	uint16_t startValue = 0x8765;
-	uint16_t configStartRegAddr = 0x3000;
-	TransmitReceiveWrite(configStartRegAddr, startValue);
-	uint16_t calStartRegAddr = 0x4000;
-	TransmitReceiveWrite(calStartRegAddr, startValue);
-	uint16_t harmStartRegAddr = 0x5000;
-	TransmitReceiveWrite(harmStartRegAddr, startValue);
-	uint16_t adjStartRegAddr = 0x6000;
-	TransmitReceiveWrite(adjStartRegAddr, startValue);
-
-	// Give checksum time to calculate
-	HAL_Delay(500);
-
-	// See what's on checksum CS0 register
-	uint16_t CS0Addr = 0x3B80;
-	return TransmitReceiveRead(CS0Addr);
 }
 
-// Return sysStatus0 register
-uint16_t sysStatus0(void){
-	return (TransmitReceiveRead(0x0180));
-}
-// Return sysStatus1 register
-uint16_t sysStatus1(void){
-	return (TransmitReceiveRead(0x0280));
+// Write to A/D data rate register - set data rate.
+void setDataRate(uint8_t drate)
+{
+	writeByteToReg(REG_DRATE, drate);
 }
 
-// function that transmits to required registers to:
-// 	start measuring and calculating harmonic components
-// From datasheet:
-//a. Set DFT computation engine and write 2A49H to the DFT_SCALE [1D0H] register (Assume gain of voltage and current is two)
-//b. Start DFT computation engine and write 001H to the DFT_CTRL [1D1H] register
-//c. Check DFT_CTRL. If DFT_CTRL=0, DFT computation is completed (about 0.5s)
-//d. Read register value and get harmonic component and fundamental voltage/current value after transition
-void startDFT(void){
-	// Start DFT computation engine (DFT_CTRL)
-	TransmitReceiveWrite(0xD101,0x0001);
+// Set the internal buffer (True - enable, False - disable).
+void setBuffer(bool val)
+{
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	send8bit(CMD_WREG | REG_STATUS);
+	send8bit((0 << 3) | (1 << 2) | (val << 1));
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 }
 
-// return DFT check register
-uint16_t checkDFT(void){
-	return TransmitReceiveRead(0x0280);
+// Get data from STATUS register - chip ID information.
+uint8_t readChipID(void)
+{
+	waitDRDY();
+	uint8_t id = readByteFromReg(REG_STATUS);
+	return (id); // Only bits 7,6,5,4 are the ones to read (only in REG_STATUS) - return shifted value!
 }
 
-// Return calculated frequency based on voltage input
-float frequency(void){
-	return (0.01*(int)TransmitReceiveRead(0xF880));
+// Write to MUX register - set channel to read from in single-ended mode.
+// Bits 7,6,5,4 determine the positive input channel (AINp).
+// Bits 3,2,1,0 determine the negative input channel (AINn).
+void setSEChannel(uint8_t channel)
+{
+	writeByteToReg(REG_MUX, channel << 4 | 1 << 3); // xxxx1000 - AINp = channel, AINn = AINCOM
 }
 
-// Return calculated current on phase A
-float currentA(void){
-	float iA = 0;
-	for(int i = 0; i<10; i++){
-		iA += (int)TransmitReceiveRead(0xDD80);
-	}
-	iA = 0.001*(iA/10);
-	float iALSB = 0;
-	for(int i = 0; i<10; i++){
-		iALSB += (int)TransmitReceiveRead(0xED80);
-	}
-	iALSB = (iALSB/10) * 0.001/256;
-	return (iA + iALSB);
+// Write to MUX register - set channel to read from in differential mode.
+// Bits 7,6,5,4 determine the positive input channel (AINp).
+// Bits 3,2,1,0 determine the negative input channel (AINn).
+void setDIFFChannel(uint8_t positiveCh, uint8_t negativeCh)
+{
+	writeByteToReg(REG_MUX, positiveCh << 4 | negativeCh); // xxxx1000 - AINp = positiveCh, AINn = negativeCh
 }
 
-// Return calculated fundamental THD on phase A
-float fundamentalIA(void){
-	startDFT();
-	uint16_t check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(100);
-	}
-	int funIA = (int)TransmitReceiveRead(0xF580);
-	return (funIA * 3.2656)/(4*100);
+// Write to A/D control register - set programmable gain amplifier (PGA).
+// CLKOUT and sensor detect options are turned off in this case.
+void setPGA(uint8_t pga)
+{
+	writeByteToReg(REG_ADCON, pga); // 00000xxx, Note: xxx = pga
 }
 
-// Return calculated THD+N (total THD) on phase A
-float phaseIATHDN(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
+// Continuously acquire analog data from one single-ended analog input.
+// Allows sampling of one single-ended input channel up to 30,000 SPS.
+void scanSEChannelContinuous(uint8_t channel, uint32_t numOfMeasure, uint32_t *values)
+{
+	uint8_t buffer[3];
+	uint32_t read = 0;
+
+	// Set single-ended analog input channel.
+	setSEChannel(channel);
+	delayus(3); // min delay: t11 = 24 * 1 / 7,68 Mhz = 3,125 micro sec
+	writeCMD(CMD_SYNC);    // SYNC command
+	delayus(3);
+	writeCMD(CMD_WAKEUP);  // WAKEUP command
+	delayus(1); // min delay: t11 = 4 * 1 / 7,68 Mhz = 0,52 micro sec
+
+	// Set continuous mode.
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	waitDRDY();
+	send8bit(CMD_RDATAC);
+
+	// Start reading data
+	for (int i = 0; i < numOfMeasure-3; ++i)
+	{
+		waitDRDY();
+		buffer[0] = recieve8bit();
+		buffer[1] = recieve8bit();
+		buffer[2] = recieve8bit();
+//		// construct 24 bit value
+		read  = ((uint32_t)buffer[0] << 16) & 0x00FF0000;
+		read |= ((uint32_t)buffer[1] << 8);
+		read |= buffer[2];
+		if (read & 0x800000){
+			read &= 0x00FFFFFF;
 		}
-		pIA += ((int)TransmitReceiveRead(0xF580));
-		startDFT();
+		values[i] = read;
 	}
-	return (0.01*(pIA/10));
+
+	// Stop continuous mode.
+	waitDRDY();
+	send8bit(CMD_SDATAC); // Stop read data continuous.
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 }
 
-// Return calculated THD ratio on phase A
-float phaseIATHDRatio(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
+// Continuously acquire analog data from one differential analog input.
+// Allows sampling of one differential input channel up to 30,000 SPS.
+void scanDIFFChannelContinuous(uint8_t positiveCh, uint8_t negativeCh, uint32_t numOfMeasure, uint32_t *values)
+{
+	uint8_t buffer[3];
+	uint32_t read = 0;
+	uint8_t del = 8;
+
+	// Set differential analog input channel.
+	setDIFFChannel(positiveCh, negativeCh);
+	delayus(del);
+
+	// Set continuous mode.
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	waitDRDY();
+	send8bit(CMD_RDATAC);
+	delayus(del); // min delay: t6 = 50 * 1/7.68 MHz = 6.5 microseconds
+
+	// Start reading data.
+	for (int i = 0; i < numOfMeasure; ++i)
+	{
+		waitDRDY();
+		buffer[0] = recieve8bit();
+		buffer[1] = recieve8bit();
+		buffer[2] = recieve8bit();
+
+		// construct 24 bit value
+		read  = ((uint32_t)buffer[0] << 16) & 0x00FF0000;
+		read |= ((uint32_t)buffer[1] << 8);
+		read |= buffer[2];
+		if (read & 0x800000){
+			read |= 0xFF000000;
 		}
-		pIA += ((int)TransmitReceiveRead(0x1F81));
-		startDFT();
+		values[i] = read;
+		//printf("%f %i\n", (float)read/1670000, clock() - startTime); // TESTING
+		delayus(del);
 	}
-	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-	return ((int)pIA/163.84);
+
+	// Stop continuous mode.
+	waitDRDY();
+	send8bit(CMD_SDATAC); // Stop read data continuous.
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+}
+// User created delay_us
+// Uses internal NUCLEO timer1 at 1 Mhz with max 0xffff
+// 1 tick = 1 us
+void delayus(uint16_t us)
+{
+	__HAL_TIM_SET_COUNTER(&htim3,0);  // set the counter value a 0
+	while (__HAL_TIM_GET_COUNTER(&htim3) < us);  // wait for the counter to reach the us input in the parameter
 }
 
-// 1-data ************************************************************
-// Return calculated 3rd THD on phase A
-//float phaseIA3rdTHD(void){
-//	startDFT();
-//	float pIA = 0;
-////	for(int i = 0; i<10; i++){
-////		uint16_t check = checkDFT();
-////		while(!((check)&&(0x0200))){
-////			check = checkDFT();
-////			HAL_Delay(100);
-////		}
-////		pIA += ((int)TransmitReceiveRead(0x0181));
-////		startDFT();
-////	}
-////	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-//	pIA += ((int)TransmitReceiveRead(0x0181));
-//	return ((int)pIA/163.84);
-//}
-//
-//// Return calculated 5th THD on phase A
-//float phaseIA5thTHD(void){
-//	startDFT();
-//	float pIA = 0;
-////	for(int i = 0; i<10; i++){
-////		uint16_t check = checkDFT();
-////		while(!((check)&&(0x0200))){
-////			check = checkDFT();
-////			HAL_Delay(100);
-////		}
-////		pIA += ((int)TransmitReceiveRead(0x0381));
-////		startDFT();
-////	}
-////	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-//	pIA += ((int)TransmitReceiveRead(0x0381));
-//	return ((int)pIA/163.84);
-//}
-//
-//// Return calculated 7th THD (total THD) on phase A
-//float phaseIA7thTHD(void){
-//	startDFT();
-//	float pIA = 0;
-////	for(int i = 0; i<10; i++){
-////		uint16_t check = checkDFT();
-////		while(!((check)&&(0x0200))){
-////			check = checkDFT();
-////			HAL_Delay(100);
-////		}
-////		pIA += ((int)TransmitReceiveRead(0x0581));
-////		startDFT();
-////	}
-////	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-//	pIA += ((int)TransmitReceiveRead(0x0581));
-//	return ((int)pIA/163.84);
-//}
-// 1-data ************************************************************
+double m_PI = (3.14159265358979323846); //google told me to define pi like this in C
+int max_samples = 1000; // this is arbitrary, can be whatever
+int numOfMeasure = 200;
 
-//// 10-data AVERAGE ************************************************************
-// Return calculated 3rd THD on phase A
-float phaseIA3rdTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0181));
-		startDFT();
-	}
-	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 5th THD on phase A
-float phaseIA5thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0381));
-		startDFT();
-	}
-	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 7th THD (total THD) on phase A
-float phaseIA7thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0581));
-		startDFT();
-	}
-	pIA /= 10;
-//	uint16_t check = checkDFT();
-//	while(!((check)&&(0x0200))){
-//		check = checkDFT();
-//		HAL_Delay(100);
-//	}
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 9th THD (total THD) on phase A
-float phaseIA9thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0781));
-		startDFT();
-	}
-	pIA /= 10;
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 11th THD (total THD) on phase A
-float phaseIA11thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0981));
-		startDFT();
-	}
-	pIA /= 10;
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 13th THD (total THD) on phase A
-float phaseIA13thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0B81));
-		startDFT();
-	}
-	pIA /= 10;
-	return ((int)pIA/163.84);
-}
-
-// Return calculated 15th THD (total THD) on phase A
-float phaseIA15thTHD(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0x0D81));
-		startDFT();
-	}
-	pIA /= 10;
-	return ((int)pIA/163.84);
-}
-//// 10-data AVERAGE ************************************************************
-
-// Current B calculation registers
-// Return calculated THD+N (total THD) on phase A
-float phaseIBTHDN(void){
-	startDFT();
-	float pIA = 0;
-	for(int i = 0; i<10; i++){
-		uint16_t check = checkDFT();
-		while(!((check)&&(0x0200))){
-			check = checkDFT();
-			HAL_Delay(100);
-		}
-		pIA += ((int)TransmitReceiveRead(0xF680));
-		startDFT();
-	}
-	return (0.01*(pIA/10));
-}
-
-// Return calculated THD ratio on phase A
-float phaseIBTHDRatio(void){
-	startDFT();
-	uint16_t check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(100);
-	}
-	return ((int)TransmitReceiveRead(0x3F81)/163.84);
-}
-
-// Return calculated 3rd THD on phase A
-float phaseIB3rdTHD(void){
-	startDFT();
-	uint16_t check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(100);
-	}
-	return ((int)TransmitReceiveRead(0x2181)/163.84);
-}
-
-// Return calculated 5th THD on phase A
-float phaseIB5thTHD(void){
-	startDFT();
-	uint16_t check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(100);
-	}
-	return ((int)TransmitReceiveRead(0x2381)/163.84);
-}
-
-// Return calculated 7th THD (total THD) on phase A
-float phaseIB7thTHD(void){
-	startDFT();
-	uint16_t check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(100);
-	}
-	return ((int)TransmitReceiveRead(0x2581)/163.84);
-}
-
-// Return calculated current on phase A
-float PMcurrentA(void){
-	uint16_t data = 0x4001;
-	float iA = 0;
-	for(int i = 0; i<10; i++){
-		TransmitReceiveWrite(0x1B00,data);
-		iA += (int)TransmitReceiveRead(0x1880);
-		HAL_Delay(500);
-	}
-	iA = (iA/10);
-	return (iA);
-}
-
-// Return calculated current on phase B
-float currentB(void){
-	return (0.001*(int)TransmitReceiveRead(0xDE80));
-}
-
-// Return calculated current on phase C
-float currentC(void){
-	return (0.001*(int)TransmitReceiveRead(0xDF80));
-}
-
-// calibrate IC onchip temperature sensor
-void calTemperature(void){
-	TransmitReceiveWrite(0xFD02, 0xAA55);
-	TransmitReceiveWrite(0x1602, 0x5122);
-	TransmitReceiveWrite(0x1902, 0x012B);
-	TransmitReceiveWrite(0xFD02, 0x0000);
-}
-
-// returns temperature C
-uint16_t temperatureC(void){
-	return TransmitReceiveRead(0xFC80);
-}
 /* USER CODE END 0 */
 
 /**
@@ -618,11 +288,8 @@ uint16_t temperatureC(void){
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
-//	VIRUTAL COM PORT TEST
-//	uint8_t Test[] = "Hello World !!!\r\n"; //Data to send
-//	HAL_UART_Transmit(&huart2,Test,sizeof(Test),10);// Sending in normal mode
-//	HAL_Delay(1000);
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -643,42 +310,25 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_SPI1_Init();
-  MX_USART2_UART_Init();
+  MX_SPI3_Init();
+  MX_USART3_UART_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  uint16_t sys0;
-  uint16_t sys1;
-  uint16_t test;
-  int16_t temp;
-  float THD_A_3rd;
-  float THD_A_5th;
-  float THD_A_7th;
-  float THD_A_9th;
-  float THD_A_11th;
-  float THD_A_13th;
-  float THD_A_15th;
-  float calcCurrA;
-  float calcCurrB;
-  float calcCurrC;
-  float aTHDN;
-  float THD_A;
-  float THD_B_3rd;
-  float THD_B_5th;
-  float THD_B_7th;
-  float bTHDN;
-  float THD_B;
-  float freq;
 
-  uint16_t check;
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_SET); //PM0
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET); //PM1
+//    LL_SPI_Enable(SPI2);
+  // Initialize Nucleo timer
+  HAL_TIM_Base_Start(&htim3);
+  setBuffer(true);
+  setPGA(PGA_GAIN16); // Keep at PGA_GAIN8 for 400 mV Peak
+  setDataRate(DRATE_30000);
 
-  // Software Reset
-  TransmitReceiveWrite(0x0080,0x789A);
-  // Set IC startconfig to measure 60 Hz
-  CalibrateICStartConfig();
-  calTemperature();
-  CalibrateICIarms0mV();
+  int server = 1;
+  int prev_server = 1;
+
+  double server1_thd_5min;
+  double server2_thd_5min;
+  int sample_count1;
+  int sample_count2;
 
 //  CalibrateICIarms5mV();
   /* USER CODE END 2 */
@@ -686,88 +336,151 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)  {
-	// test SPI is setup and reading correctly
-	// 8 means read address, 0 means write to address
-	test = TransmitReceiveRead(0x0E80); // Should return 7E44H
 
-	startDFT();
-	check = checkDFT();
-	while(!((check)&&(0x0200))){
-		check = checkDFT();
-		HAL_Delay(500);
+	// Pulled from ads1256.h/.c author
+	// Changed functionality to do continuous read, kept for loops
+	////////////////////////////////////
+	// Single Channel Continuous read //
+	////////////////////////////////////
+	uint32_t numOfMeasure = 400; // 80 seems goodish
+	uint32_t samples[numOfMeasure];
+    double cleaned_samples[numOfMeasure];
+    double cycle_samples[numOfMeasure];
+
+    uint8_t txbuf[64];
+
+    // Start continous read and collect numOfMeasure samples
+//	scanSEChannelContinuous(AIN0, numOfMeasure, samples);
+    if(server == 1){
+    	scanDIFFChannelContinuous(AIN0,AIN1,numOfMeasure,samples);
+    	prev_server = 1;
+    	server = 2;
+    }else{
+    	scanDIFFChannelContinuous(AIN2,AIN3,numOfMeasure,samples);
+    	prev_server = 2;
+    	server = 1;
+    }
+
+	writeCMD(CMD_SELFCAL);
+	delayus(1000);
+
+	// Start data processing then send to COM port
+	for(int i = 0; i < numOfMeasure; i++){
+		double value = ((double)(samples[i]))/16777220;
+		if(value > 5){
+			value = value-256;
+		}//else if(value < 0.001){
+//			continue;
+//		}else{
+		cleaned_samples[i] = value; 	// THIS WILL CHANGE DEPENDING ON OFFSET VOLTAGE
+//			//For debugging individual readings
+//		sprintf((char*)txbuf, "%f\r\n", value);
+//		HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+//		}
 	}
 
-	sys0 = sysStatus0();
-	sys1 = sysStatus1();
 
-//	aTHDN = phaseIATHDN();
-//	THD_A = phaseIATHDRatio();
-//	calcCurrA = currentA();
-//	THD_A_3rd = phaseIA3rdTHD();
-//	THD_A_5th = phaseIA5thTHD();
-//	THD_A_7th = phaseIA7thTHD();
-//	THD_A_9th = phaseIA9thTHD();
-//	THD_A_11th = phaseIA11thTHD();
-//	THD_A_13th = phaseIA13thTHD();
-//	THD_A_15th = phaseIA15thTHD();
+
+	int N_raw = sizeof cleaned_samples / sizeof (cleaned_samples[0]);
+	int start = 0; // for cycle detection
+	int N = 0;     // number of samples in the detected cycle
+	int cycles_per_sample = 72;
+	double mPI = 3.14159265358979323846;
+	double thd = 0;
+
+	for (int i = 1; i < N_raw; i++)
+	{
+		if (cleaned_samples[i] >= 0 && cleaned_samples[i-1] < 0) // detect rising edge by checking for transition from negative to positive
+		{
+			start = i; //I want to solve for N (number of samples) as the element at the end minus the element at the start. this is the start
+			N = cycles_per_sample; //i is the 'end' here. so I subtract the end from the start to get N
+
+			memset(cycle_samples, 0, N);//making a new array for the DFT calculation. basically I want to copy the elements of one array into another array
+
+			for (int j = 0; j < N; j++)
+			{
+				cycle_samples[j] = cleaned_samples[start + j]; // copy from raw sample values array to new array for dft calculation
+
+			}
+
+			double fundamental_amplitude = 0.0; // to store amplitude of the fundamental frequency
+			int max_m = 25;
+			for (int m = 1; m <= max_m; m++) {
+				double real = 0.0;
+				double imag = 0.0;
+				// perform DFT for each harmonic up to m = 25
+				for (int n = 0; n < N; n++) {
+					double angle = 2 * mPI * m * n / N;
+					real += cycle_samples[n] * cos(angle);
+					imag -= cycle_samples[n] * sin(angle);
+				}
+				real *= 2.0 / N; // multiply the real part by the constant outside the summation
+				imag *= 2.0 / N; // multiply the imaginary part by the constant outside the summation
+
+				double amplitude = sqrt(real * real + imag * imag); // calculate amplitude
+
+				if (m == 1)
+				{
+					fundamental_amplitude = amplitude; // store fundamental amplitude
+				}
+
+				else
+				{
+					if (m%2 == 1){
+//						double harmonic_distortion = (amplitude / fundamental_amplitude) * 100.0; // calculate harmonic distortion percentage
+			//            printf("Harmonic order %d: Distortion = %.2f%%\n", m, harmonic_distortion);
+						thd += (amplitude)*(amplitude);
+
+//						sprintf((char*)txbuf, "Harmonic order %d: Distortion = %.2f%%\r\n", m, harmonic_distortion);
+//						HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+//						HAL_Delay(10);
+					}
+				}
+			}
+			thd = sqrt(thd)/fundamental_amplitude*100;
+
+			sprintf((char*)txbuf, "1x1x%dx%.0fp\r\n", prev_server, thd);
+			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
+//			sprintf((char*)txbuf, "  \r\n");
+//			HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+			HAL_Delay(10);
+			break;
+		}
+	}
 //
-//	uint8_t txbuf[64];
-//	sprintf((char*)txbuf, "currentA: %.2f\r\n", calcCurrA);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_A: %.2f\r\n", THD_A);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_3RD_A: %.2f\r\n", THD_A_3rd);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_5TH_A: %.2f\r\n", THD_A_5th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_7TH_A: %.2f\r\n", THD_A_7th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_9TH_A: %.2f\r\n", THD_A_9th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_11TH_A: %.2f\r\n", THD_A_11th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_13TH_A: %.2f\r\n", THD_A_13th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "THD_15TH_A: %.2f\r\n", THD_A_15th);
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	sprintf((char*)txbuf, "\r\n");
-//	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-//	HAL_Delay(200); // delay 0.2 sec
+//	if(prev_server == 1){
+//		server1_thd_5min += thd;
+//		sample_count1++;
+//		if(sample_count1 >= 1){
+//			server1_thd_5min /= sample_count1;
+//			sprintf((char*)txbuf, "1x1x%dx%.0fp\r\n", prev_server, server1_thd_5min);
+//			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10);
+//	//		HAL_Delay(10);
+//
+//			sample_count1 = 0;
+//			server1_thd_5min = 0;
+//		}
+//	}
+//	if(prev_server == 2){
+//		server2_thd_5min += thd;
+//		sample_count2++;
+//		if(sample_count2 >= 1){
+//			server2_thd_5min /= sample_count2;
+//			sprintf((char*)txbuf, "1x1x%dx%.0fp\r\n", prev_server, server2_thd_5min);
+//			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10);
+//	//		HAL_Delay(10);
+//
+//			sample_count2 = 0;
+//			server2_thd_5min = 0;
+//		}
+//	}
 
-//	bTHDN = phaseIBTHDN();
-//	THD_B = phaseIBTHDRatio();
-//	THD_B_3rd = phaseIB3rdTHD();
-//	THD_B_5th = phaseIB5thTHD();
-//	calcCurrB = currentB();
-//	temp = temperatureC();
 
-	// ********* USB Serial TEST DATA *********
-	bTHDN = 10.5;
-	THD_B = 175.5;
-	THD_B_3rd = 90.1;
-	THD_B_5th = 73.3;
-	calcCurrB = 54.5;
-	temp = 17;
-	// ********* USB Serial TEST DATA *********
 
-	uint8_t txbuf[64];
-	sprintf((char*)txbuf, "Temperature: %.2f\r\n", temp);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	sprintf((char*)txbuf, "currentB: %.2f\r\n", calcCurrB);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	sprintf((char*)txbuf, "THD_B: %.2f\r\n", THD_B);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	sprintf((char*)txbuf, "THD_3RD_B: %.2f\r\n", THD_B_3rd);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	sprintf((char*)txbuf, "THD_5TH_B: %.2f\r\n", THD_B_5th);
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	sprintf((char*)txbuf, "\r\n");
-	HAL_UART_Transmit(&huart2, txbuf, strlen((char*)txbuf), 10);
-	HAL_Delay(1000); // delay test data by 1 second
+	HAL_Delay(5000); // Wait 5 second
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
   }
   /* USER CODE END 3 */
 }
@@ -780,7 +493,11 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -807,116 +524,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2;
-  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : PB4 PB5 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
