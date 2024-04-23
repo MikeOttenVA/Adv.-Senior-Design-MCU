@@ -363,6 +363,7 @@ int main(void)
 
 	writeCMD(CMD_SELFCAL);
 	delayus(1000);
+	double rmscurrent = 0;
 
 	// Start data processing then send to COM port
 	for(int i = 0; i < numOfMeasure; i++){
@@ -372,6 +373,9 @@ int main(void)
 		}//else if(value < 0.001){
 //			continue;
 //		}else{
+		if(rmscurrent < value){
+			rmscurrent = value;
+		}
 		cleaned_samples[i] = value; 	// THIS WILL CHANGE DEPENDING ON OFFSET VOLTAGE
 //			//For debugging individual readings
 //		sprintf((char*)txbuf, "%f\r\n", value);
@@ -379,21 +383,84 @@ int main(void)
 //		}
 	}
 
-
+	// Sample resistor is R = 2 kOhms
+	// turn ratio of CT SCT013 is N = 2000
+	rmscurrent = (rmscurrent)*2;
 
 	int N_raw = sizeof cleaned_samples / sizeof (cleaned_samples[0]);
 	int start = 0; // for cycle detection
 	int N = 0;     // number of samples in the detected cycle
-	int cycles_per_sample = 72;
-	double mPI = 3.14159265358979323846;
+	int samples_per_cycle = 62;
+	double m_PI = 3.14159265358979323846;
 	double thd = 0;
+	int max_m = 25;
 
+//    double raw_sample_values[max_samples] =
+//    {
+//
+//    };
+//    N = samples_per_cycle;
+//
+//    for (int i = 1; i < N_raw; i++)
+//    {
+//        if (cleaned_samples[i] > 0 && cleaned_samples[i-1] <= 0)
+//        {
+//            start = i;
+//
+//            double cycle_samples[N];
+//
+//            for (int j = 0; j < N; j++)
+//            {
+//                cycle_samples[j] = cleaned_samples[start + j];
+//            }
+//
+//            double fundamental_amplitude = 0.0;
+//
+//            for (int m = 1; m <= max_m; m++) {
+//                double real = 0.0;
+//                double imag = 0.0;
+//
+//                for (int n = 0; n < N; n++) {
+//                    double angle = 2 * M_PI * m * n / N;
+//                    real += cycle_samples[n] * cos(angle);
+//                    imag -= cycle_samples[n] * sin(angle);
+//                }
+//                real = 2.0 / N;
+//                imag= 2.0 / N;
+//
+//                double amplitude = sqrt(real * real + imag * imag);
+//
+//                if (m == 1)
+//                {
+//                    fundamental_amplitude = amplitude;
+//                }
+//                else
+//                {
+//                    double harmonic_distortion = (amplitude / fundamental_amplitude) * 100.0;
+//                    printf("Harmonic order %d: Distortion = %.2f%%\n", m, harmonic_distortion);
+//					thd += (amplitude)*(amplitude);
+//
+//					sprintf((char*)txbuf, "Harmonic order %d: Distortion = %.2f%%\r\n", m, harmonic_distortion);
+//					HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+//					HAL_Delay(10);
+//                }
+//            }
+//			thd = sqrt(thd)/fundamental_amplitude*100;
+//
+//			sprintf((char*)txbuf, "1x1x%dx%.0fx%.0fp\r\n", prev_server, thd, fundamental_amplitude*100);
+//			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
+//			sprintf((char*)txbuf, "  \r\n");
+//			HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+//			HAL_Delay(10);
+//			break;
+//        }
+//    }
 	for (int i = 1; i < N_raw; i++)
 	{
 		if (cleaned_samples[i] >= 0 && cleaned_samples[i-1] < 0) // detect rising edge by checking for transition from negative to positive
 		{
 			start = i; //I want to solve for N (number of samples) as the element at the end minus the element at the start. this is the start
-			N = cycles_per_sample; //i is the 'end' here. so I subtract the end from the start to get N
+			N = samples_per_cycle; //i is the 'end' here. so I subtract the end from the start to get N
 
 			memset(cycle_samples, 0, N);//making a new array for the DFT calculation. basically I want to copy the elements of one array into another array
 
@@ -410,7 +477,7 @@ int main(void)
 				double imag = 0.0;
 				// perform DFT for each harmonic up to m = 25
 				for (int n = 0; n < N; n++) {
-					double angle = 2 * mPI * m * n / N;
+					double angle = 2 * m_PI * m * n / N;
 					real += cycle_samples[n] * cos(angle);
 					imag -= cycle_samples[n] * sin(angle);
 				}
@@ -422,13 +489,15 @@ int main(void)
 				if (m == 1)
 				{
 					fundamental_amplitude = amplitude; // store fundamental amplitude
+//					sprintf((char*)txbuf, "Harmonic order %d: Distortion = %.2f%%\r\n", m, amplitude);
+//					HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
 				}
 
 				else
 				{
 					if (m%2 == 1){
-//						double harmonic_distortion = (amplitude / fundamental_amplitude) * 100.0; // calculate harmonic distortion percentage
-			//            printf("Harmonic order %d: Distortion = %.2f%%\n", m, harmonic_distortion);
+						double harmonic_distortion = (amplitude / fundamental_amplitude) * 100.0; // calculate harmonic distortion percentage
+//			            printf("Harmonic order %d: Distortion = %.2f%%\n", m, harmonic_distortion);
 						thd += (amplitude)*(amplitude);
 
 //						sprintf((char*)txbuf, "Harmonic order %d: Distortion = %.2f%%\r\n", m, harmonic_distortion);
@@ -439,15 +508,31 @@ int main(void)
 			}
 			thd = sqrt(thd)/fundamental_amplitude*100;
 
-			sprintf((char*)txbuf, "1x1x%dx%.0fp\r\n", prev_server, thd);
-			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
+//			sprintf((char*)txbuf, "1x1x%dx%.0fx%.0fp\r\n", prev_server, thd, fundamental_amplitude*100);
+//			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
 //			sprintf((char*)txbuf, "  \r\n");
 //			HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
-			HAL_Delay(10);
+//			HAL_Delay(10);
+//			sprintf((char*)txbuf, "%f\r\n", rmscurrent);
+//			HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+
+			if(rmscurrent > 0.05){
+				sprintf((char*)txbuf, "1x1x%dx%.0fx%.0fx%.3fp\r\n", prev_server, thd, fundamental_amplitude*100, rmscurrent);
+				HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
+				sprintf((char*)txbuf, "  \r\n");
+				HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+				HAL_Delay(10);
+			}else{
+				sprintf((char*)txbuf, "1x1x%dx%.0fx%.0fx%.0fp\r\n", prev_server, 0, 0, 0);
+				HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
+				sprintf((char*)txbuf, "  \r\n");
+				HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
+				HAL_Delay(10);
+			}
 			break;
 		}
 	}
-//
+//	HAL_Delay(500);
 //	if(prev_server == 1){
 //		server1_thd_5min += thd;
 //		sample_count1++;
@@ -474,10 +559,6 @@ int main(void)
 //			server2_thd_5min = 0;
 //		}
 //	}
-
-
-
-	HAL_Delay(5000); // Wait 5 second
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
