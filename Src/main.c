@@ -385,7 +385,7 @@ int main(void)
 
 	// Sample resistor is R = 2 kOhms
 	// turn ratio of CT SCT013 is N = 2000
-	rmscurrent = (rmscurrent)*2;
+	rmscurrent = (rmscurrent)*20;
 
 	int N_raw = sizeof cleaned_samples / sizeof (cleaned_samples[0]);
 	int start = 0; // for cycle detection
@@ -394,67 +394,6 @@ int main(void)
 	double m_PI = 3.14159265358979323846;
 	double thd = 0;
 	int max_m = 25;
-
-//    double raw_sample_values[max_samples] =
-//    {
-//
-//    };
-//    N = samples_per_cycle;
-//
-//    for (int i = 1; i < N_raw; i++)
-//    {
-//        if (cleaned_samples[i] > 0 && cleaned_samples[i-1] <= 0)
-//        {
-//            start = i;
-//
-//            double cycle_samples[N];
-//
-//            for (int j = 0; j < N; j++)
-//            {
-//                cycle_samples[j] = cleaned_samples[start + j];
-//            }
-//
-//            double fundamental_amplitude = 0.0;
-//
-//            for (int m = 1; m <= max_m; m++) {
-//                double real = 0.0;
-//                double imag = 0.0;
-//
-//                for (int n = 0; n < N; n++) {
-//                    double angle = 2 * M_PI * m * n / N;
-//                    real += cycle_samples[n] * cos(angle);
-//                    imag -= cycle_samples[n] * sin(angle);
-//                }
-//                real = 2.0 / N;
-//                imag= 2.0 / N;
-//
-//                double amplitude = sqrt(real * real + imag * imag);
-//
-//                if (m == 1)
-//                {
-//                    fundamental_amplitude = amplitude;
-//                }
-//                else
-//                {
-//                    double harmonic_distortion = (amplitude / fundamental_amplitude) * 100.0;
-//                    printf("Harmonic order %d: Distortion = %.2f%%\n", m, harmonic_distortion);
-//					thd += (amplitude)*(amplitude);
-//
-//					sprintf((char*)txbuf, "Harmonic order %d: Distortion = %.2f%%\r\n", m, harmonic_distortion);
-//					HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
-//					HAL_Delay(10);
-//                }
-//            }
-//			thd = sqrt(thd)/fundamental_amplitude*100;
-//
-//			sprintf((char*)txbuf, "1x1x%dx%.0fx%.0fp\r\n", prev_server, thd, fundamental_amplitude*100);
-//			HAL_UART_Transmit(&huart3, &txbuf, strlen((char*)txbuf), 10); //strlen((char*)txbuf)
-//			sprintf((char*)txbuf, "  \r\n");
-//			HAL_UART_Transmit(&huart3, txbuf, strlen((char*)txbuf), 10);
-//			HAL_Delay(10);
-//			break;
-//        }
-//    }
 	for (int i = 1; i < N_raw; i++)
 	{
 		if (cleaned_samples[i] >= 0 && cleaned_samples[i-1] < 0) // detect rising edge by checking for transition from negative to positive
