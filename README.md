@@ -59,6 +59,9 @@ Michael Ottenberg
 GMU School Email - Mottenb@gmu.edu
 LinkedIn - https://www.linkedin.com/in/michael-ottenberg-aa491a18a/
 
+Amirali Jahdi (CTHD Algorithm)
+GMU School Email - ajahdi@gmu.edu
+LinkedIn - https://www.linkedin.com/in/amirali-j-015b1314a/
 ## Version History
 
 * 1.0
